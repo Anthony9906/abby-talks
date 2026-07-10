@@ -374,7 +374,7 @@ export default function Home() {
               <div className="flex min-w-64 flex-col gap-3">
                 <Link
                   className="rounded-2xl bg-white/90 px-5 py-3 text-center text-lg font-black text-gray-800 shadow-soft transition active:scale-[0.98]"
-                  href="/"
+                  href="/games"
                 >
                   Game Hub
                 </Link>

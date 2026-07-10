@@ -373,7 +373,7 @@ export default function DragonMastersPage() {
               </div>
               <Link
                 className="rounded-3xl bg-white px-5 py-3 text-lg font-black text-gray-800 shadow-soft transition active:scale-[0.98]"
-                href="/"
+                href="/games"
               >
                 Game Hub
               </Link>
