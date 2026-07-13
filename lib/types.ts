@@ -24,8 +24,8 @@ export type Stats = {
   stars: number;
   totalMatches: number;
   totalQuestions: number;
-  daughterCorrect: number;
-  daughterAttempts: number;
+  correctAnswers: number;
+  attempts: number;
   fastestAnswerSec: number | null;
   winStreak: number;
   wrongBook: WrongQuestion[];
@@ -38,5 +38,5 @@ export type GameResult = {
   starGain: number;
   questionCount: number;
   winner: "爸爸" | "女儿" | "平局";
-  perfectDaughter: boolean;
+  perfectPlayer: boolean;
 };

@@ -1,4 +1,5 @@
 import type { Stats } from "./types";
+import type { Role } from "./roles";
 
 const STORAGE_KEY = "math-battle-v1";
 
@@ -7,30 +8,54 @@ export const defaultStats: Stats = {
   stars: 0,
   totalMatches: 0,
   totalQuestions: 0,
-  daughterCorrect: 0,
-  daughterAttempts: 0,
+  correctAnswers: 0,
+  attempts: 0,
   fastestAnswerSec: null,
   winStreak: 0,
   wrongBook: [],
 };
 
-export const loadStats = (): Stats => {
-  if (typeof window === "undefined") return defaultStats;
+export async function loadStats(role: Role): Promise<Stats> {
+  const response = await fetch(`/api/profiles/${role}/math`, { cache: "no-store" });
+  if (!response.ok) throw new Error("Unable to load math progress");
+  const payload = (await response.json()) as { stats: Stats };
+  return { ...defaultStats, ...payload.stats };
+}
+
+export async function saveStats(role: Role, stats: Stats): Promise<Stats> {
+  const response = await fetch(`/api/profiles/${role}/math`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ stats }),
+  });
+  if (!response.ok) throw new Error("Unable to save math progress");
+  const payload = (await response.json()) as { stats: Stats };
+  return payload.stats;
+}
+
+export const loadLegacyStats = (): Stats | null => {
+  if (typeof window === "undefined") return null;
 
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return defaultStats;
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<Stats> & {
+      daughterCorrect?: number;
+      daughterAttempts?: number;
+    };
 
     return {
       ...defaultStats,
-      ...JSON.parse(raw),
+      ...parsed,
+      correctAnswers: parsed.correctAnswers ?? parsed.daughterCorrect ?? 0,
+      attempts: parsed.attempts ?? parsed.daughterAttempts ?? 0,
     };
   } catch {
-    return defaultStats;
+    return null;
   }
 };
 
-export const saveStats = (stats: Stats) => {
+export const clearLegacyStats = () => {
   if (typeof window === "undefined") return;
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(stats));
+  window.localStorage.removeItem(STORAGE_KEY);
 };

@@ -1,7 +1,7 @@
 @import "tailwindcss";
 
 @theme inline {
-  --font-rounded: ui-rounded, "Avenir Next Rounded", "Nunito", "PingFang SC", "Hiragino Sans GB", system-ui, sans-serif;
+  --font-rounded: ui-rounded, "Avenir Next Rounded", "Nunito", "PingFang SC", "Hiragino Sans GB", "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", system-ui, sans-serif;
   --shadow-soft: 0 14px 30px rgba(31, 41, 55, 0.12);
 }
 
@@ -38,8 +38,14 @@ a {
 }
 
 button,
-input {
-  font: inherit;
+input,
+select,
+textarea {
+  color: inherit;
+  font-family: var(--font-rounded);
+  font-size: inherit;
+  font-weight: inherit;
+  line-height: inherit;
 }
 
 button,

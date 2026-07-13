@@ -1,7 +1,15 @@
 "use client";
 
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  clearLegacyReadingProgress,
+  loadLegacyReadingProgress,
+  loadReadingProgress,
+  saveReadingProgress,
+} from "@/lib/reading-storage";
+import { parseRole, roleLabels } from "@/lib/roles";
 
 type Stop = {
   id: number;
@@ -27,7 +35,6 @@ type LegacyStopAnswer = Partial<StopAnswer> & {
   magic?: string;
 };
 
-const STORAGE_KEY = "abby-dragon-masters-quest-v1";
 const SHIELDS_PER_STOP = 25;
 
 const createEmptyAnswer = (): StopAnswer => ({
@@ -204,34 +211,31 @@ const normalizeShields = (saved: LegacyStopAnswer) => {
   return Array.from({ length: SHIELDS_PER_STOP }, (_, index) => Boolean(saved.completed && index === 0));
 };
 
-const loadProgress = () => {
-  if (typeof window === "undefined") return createInitialProgress();
+const normalizeProgress = (value: unknown) => {
+  const parsed = value && typeof value === "object"
+    ? (value as Record<number, LegacyStopAnswer | undefined>)
+    : {};
 
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return createInitialProgress();
-    const parsed = JSON.parse(raw) as Record<number, LegacyStopAnswer | undefined>;
+  return stops.reduce<QuestProgress>((progress, stop) => {
+    const saved = parsed[stop.id] ?? {};
+    const legacyNotes = [saved.characters, saved.scene, saved.magic].filter(
+      (item): item is string => Boolean(item?.trim()),
+    );
 
-    return stops.reduce<QuestProgress>((progress, stop) => {
-      const saved = parsed[stop.id] ?? {};
-      const legacyNotes = [saved.characters, saved.scene, saved.magic].filter(
-        (value): value is string => Boolean(value?.trim()),
-      );
-
-      progress[stop.id] = {
-        notes: Array.isArray(saved.notes) ? saved.notes : legacyNotes,
-        shields: normalizeShields(saved),
-      };
-      return progress;
-    }, {});
-  } catch {
-    return createInitialProgress();
-  }
+    progress[stop.id] = {
+      notes: Array.isArray(saved.notes) ? saved.notes : legacyNotes,
+      shields: normalizeShields(saved),
+    };
+    return progress;
+  }, {});
 };
 
 export default function DragonMastersPage() {
+  const searchParams = useSearchParams();
+  const role = parseRole(searchParams.get("role"));
   const [progress, setProgress] = useState<QuestProgress>(() => createInitialProgress());
   const [hydrated, setHydrated] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<"loading" | "saved" | "saving" | "error">("loading");
   const [selectedStopId, setSelectedStopId] = useState<number>(1);
   const [noteDraft, setNoteDraft] = useState("");
   const [audioStopId, setAudioStopId] = useState<number | null>(null);
@@ -240,24 +244,74 @@ export default function DragonMastersPage() {
   const [audioDuration, setAudioDuration] = useState(0);
   const [audioIsPlaying, setAudioIsPlaying] = useState(false);
   const audioRef = useRef<HTMLAudioElement>(null);
+  const lastSyncedProgressRef = useRef("");
 
   useEffect(() => {
-    setProgress(loadProgress());
-    setHydrated(true);
-  }, []);
+    if (!role) return;
+    let cancelled = false;
+
+    const load = async () => {
+      setSyncStatus("loading");
+      try {
+        let remoteProgress = normalizeProgress(await loadReadingProgress(role));
+        const legacy = loadLegacyReadingProgress();
+        const remoteIsEmpty = Object.values(remoteProgress).every(
+          (stop) => stop.notes.length === 0 && !stop.shields.some(Boolean),
+        );
+        if (
+          legacy &&
+          remoteIsEmpty &&
+          window.confirm(`检测到这台设备上的旧阅读记录，是否导入到 ${roleLabels[role]}？`)
+        ) {
+          remoteProgress = normalizeProgress(
+            await saveReadingProgress(role, normalizeProgress(legacy)),
+          );
+          clearLegacyReadingProgress();
+        }
+        if (!cancelled) {
+          lastSyncedProgressRef.current = JSON.stringify(remoteProgress);
+          setProgress(remoteProgress);
+          setSyncStatus("saved");
+          setHydrated(true);
+        }
+      } catch {
+        if (!cancelled) setSyncStatus("error");
+      }
+    };
+
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [role]);
 
   useEffect(() => {
-    if (!hydrated) return;
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(progress));
-  }, [hydrated, progress]);
+    if (!hydrated || !role) return;
+    const serialized = JSON.stringify(progress);
+    if (serialized === lastSyncedProgressRef.current) return;
 
-  useEffect(() => {
+    setSyncStatus("saving");
+    const timer = window.setTimeout(() => {
+      void saveReadingProgress(role, progress)
+        .then((saved) => {
+          const normalized = normalizeProgress(saved);
+          lastSyncedProgressRef.current = JSON.stringify(normalized);
+          setSyncStatus("saved");
+        })
+        .catch(() => setSyncStatus("error"));
+    }, 300);
+
+    return () => window.clearTimeout(timer);
+  }, [hydrated, progress, role]);
+
+  const selectStop = (stopId: number) => {
+    setSelectedStopId(stopId);
     setNoteDraft("");
     setAudioStopId(null);
     setAudioCurrentTime(0);
     setAudioDuration(0);
     setAudioIsPlaying(false);
-  }, [selectedStopId]);
+  };
 
   useEffect(() => {
     if (audioStopId !== selectedStopId) return;
@@ -356,6 +410,48 @@ export default function DragonMastersPage() {
     seekAudio(nextTime);
   };
 
+  const retrySave = () => {
+    if (!role) return;
+    setSyncStatus("saving");
+    void saveReadingProgress(role, progress)
+      .then((saved) => {
+        const normalized = normalizeProgress(saved);
+        lastSyncedProgressRef.current = JSON.stringify(normalized);
+        setSyncStatus("saved");
+      })
+      .catch(() => setSyncStatus("error"));
+  };
+
+  if (!role) {
+    return (
+      <main className="flex min-h-screen items-center justify-center p-6">
+        <div className="rounded-[2rem] bg-white p-8 text-center shadow-soft">
+          <h1 className="text-3xl font-black text-slate-950">请先选择角色</h1>
+          <Link className="mt-5 inline-block rounded-full bg-emerald-500 px-6 py-3 text-xl font-black text-white" href="/">
+            返回首页
+          </Link>
+        </div>
+      </main>
+    );
+  }
+
+  if (!hydrated) {
+    return (
+      <main className="flex min-h-screen items-center justify-center p-6">
+        <div className="rounded-[2rem] bg-white p-8 text-center shadow-soft">
+          <h1 className="text-3xl font-black text-slate-950">
+            {syncStatus === "error" ? "无法连接云端记录" : `正在加载 ${roleLabels[role]} 的记录…`}
+          </h1>
+          {syncStatus === "error" && (
+            <button className="mt-5 rounded-full bg-emerald-500 px-6 py-3 text-xl font-black text-white" onClick={() => window.location.reload()} type="button">
+              重新连接
+            </button>
+          )}
+        </div>
+      </main>
+    );
+  }
+
   return (
     <main className="min-h-screen px-3 py-4 md:px-6 md:py-6">
       <section className="mx-auto grid min-h-[calc(100vh-2rem)] max-w-7xl gap-4 xl:grid-cols-[1.45fr_0.75fr]">
@@ -373,10 +469,19 @@ export default function DragonMastersPage() {
               </div>
               <Link
                 className="rounded-3xl bg-white px-5 py-3 text-lg font-black text-gray-800 shadow-soft transition active:scale-[0.98]"
-                href="/games"
+                href={`/games?role=${role}`}
               >
                 Game Hub
               </Link>
+              <button
+                className={`rounded-3xl px-4 py-2 text-sm font-black ${
+                  syncStatus === "error" ? "bg-rose-100 text-rose-700" : "bg-emerald-100 text-emerald-800"
+                }`}
+                onClick={syncStatus === "error" ? retrySave : undefined}
+                type="button"
+              >
+                {roleLabels[role]} · {syncStatus === "saving" ? "保存中…" : syncStatus === "error" ? "保存失败，重试" : "云端已保存"}
+              </button>
             </div>
           </div>
 
@@ -405,7 +510,7 @@ export default function DragonMastersPage() {
                               ? "border-white bg-emerald-500 text-white"
                               : "border-white bg-white/85 text-gray-900"
                         }`}
-                        onClick={() => setSelectedStopId(stop.id)}
+                        onClick={() => selectStop(stop.id)}
                         style={{ left: `${stop.x}%`, top: `${stop.y}%` }}
                         type="button"
                       >
@@ -418,7 +523,7 @@ export default function DragonMastersPage() {
                             ? "border-emerald-500/70 bg-white/70 text-emerald-950"
                             : "border-amber-200/60 bg-amber-50/70 text-amber-950"
                         }`}
-                        onClick={() => setSelectedStopId(stop.id)}
+                        onClick={() => selectStop(stop.id)}
                         style={{ left: `${stop.x + 3.7}%`, top: `${stop.y - 2.9}%` }}
                         type="button"
                       >
@@ -437,7 +542,7 @@ export default function DragonMastersPage() {
                             ? "border-emerald-500/60 bg-white/50 text-emerald-950"
                             : "border-amber-200/50 bg-amber-50/50 text-amber-950"
                         }`}
-                        onClick={() => setSelectedStopId(stop.id)}
+                        onClick={() => selectStop(stop.id)}
                         style={{ left: `${stop.rewardX}%`, top: `${stop.rewardY}%` }}
                         type="button"
                       >

@@ -1,11 +1,13 @@
 "use client";
 
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BigButton } from "@/components/BigButton";
 import { NumberPad } from "@/components/NumberPad";
 import { StatPill } from "@/components/StatPill";
-import { defaultStats, loadStats, saveStats } from "@/lib/storage";
+import { clearLegacyStats, defaultStats, loadLegacyStats, loadStats, saveStats } from "@/lib/storage";
+import { parseRole, roleLabels } from "@/lib/roles";
 import type { GameMode, GameResult, Question, Stats, WrongQuestion } from "@/lib/types";
 import { formatQuestion, generateQuestionSet, wrongToQuestion } from "@/lib/questions";
 
@@ -31,7 +33,7 @@ type MatchState = {
   dadScore: number;
   daughterScore: number;
   wrongEntries: WrongQuestion[];
-  fastestDaughterSec: number | null;
+  fastestPlayerSec: number | null;
   roundStartedAt: number;
 };
 
@@ -82,6 +84,8 @@ const updateFastest = (current: number | null, candidate: number | null) => {
 };
 
 export default function Home() {
+  const searchParams = useSearchParams();
+  const role = parseRole(searchParams.get("role"));
   const [view, setView] = useState<View>("home");
   const [mode, setMode] = useState<GameMode>("within20");
   const [questionCount, setQuestionCount] = useState<number>(DEFAULT_QUESTION_COUNT);
@@ -93,17 +97,66 @@ export default function Home() {
   const [trainingResult, setTrainingResult] = useState<TrainingResult>(null);
   const [roundFeedback, setRoundFeedback] = useState<RoundFeedback>(null);
   const [rewardModal, setRewardModal] = useState<RewardModalType>(null);
+  const [dataReady, setDataReady] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<"loading" | "saved" | "saving" | "error">("loading");
+  const [unsavedStats, setUnsavedStats] = useState<Stats | null>(null);
   const advancingRef = useRef(false);
   const trainingAdvancingRef = useRef(false);
 
   useEffect(() => {
-    setStats(loadStats());
-  }, []);
+    if (!role) return;
+    let cancelled = false;
+
+    const load = async () => {
+      setSyncStatus("loading");
+      try {
+        let remoteStats = await loadStats(role);
+        const legacyStats = loadLegacyStats();
+        const remoteIsEmpty = remoteStats.totalMatches === 0 && remoteStats.wrongBook.length === 0;
+        if (
+          legacyStats &&
+          remoteIsEmpty &&
+          window.confirm(`检测到这台设备上的旧数学记录，是否导入到 ${roleLabels[role]}？`)
+        ) {
+          remoteStats = await saveStats(role, legacyStats);
+          clearLegacyStats();
+        }
+        if (!cancelled) {
+          setStats(remoteStats);
+          setSyncStatus("saved");
+          setDataReady(true);
+        }
+      } catch {
+        if (!cancelled) {
+          setSyncStatus("error");
+          setDataReady(false);
+        }
+      }
+    };
+
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [role]);
 
   const persistStats = useCallback((nextStats: Stats) => {
+    if (!role) return;
     setStats(nextStats);
-    saveStats(nextStats);
-  }, []);
+    setUnsavedStats(nextStats);
+    setSyncStatus("saving");
+    void saveStats(role, nextStats)
+      .then((saved) => {
+        setStats(saved);
+        setUnsavedStats(null);
+        setSyncStatus("saved");
+      })
+      .catch(() => setSyncStatus("error"));
+  }, [role]);
+
+  const retrySave = () => {
+    if (unsavedStats) persistStats(unsavedStats);
+  };
 
   const startMatch = () => {
     advancingRef.current = false;
@@ -123,7 +176,7 @@ export default function Home() {
       dadScore: 0,
       daughterScore: 0,
       wrongEntries: [],
-      fastestDaughterSec: null,
+      fastestPlayerSec: null,
       roundStartedAt: Date.now(),
     });
     setView("game");
@@ -150,7 +203,7 @@ export default function Home() {
   };
 
   const finishRound = useCallback(() => {
-    if (!match || advancingRef.current) return;
+    if (!match || !role || advancingRef.current) return;
     advancingRef.current = true;
 
     const question = match.questions[match.index];
@@ -158,21 +211,26 @@ export default function Home() {
     const daughterCorrect = answerIsCorrect(match.daughterInput, question.answer);
     const dadScore = match.dadScore + (dadCorrect ? 1 : 0);
     const daughterScore = match.daughterScore + (daughterCorrect ? 1 : 0);
-    const daughterElapsed = daughterCorrect
+    const selectedIsDad = role === "dad";
+    const selectedCorrect = selectedIsDad ? dadCorrect : daughterCorrect;
+    const selectedInput = selectedIsDad ? match.dadInput : match.daughterInput;
+    const selectedSubmittedAt = selectedIsDad ? match.dadSubmittedAt : match.daughterSubmittedAt;
+    const selectedScore = selectedIsDad ? dadScore : daughterScore;
+    const selectedElapsed = selectedCorrect
       ? Number(
-          (((match.daughterSubmittedAt ?? Date.now()) - match.roundStartedAt) / 1000).toFixed(1),
+          (((selectedSubmittedAt ?? Date.now()) - match.roundStartedAt) / 1000).toFixed(1),
         )
       : null;
-    const fastestDaughterSec = updateFastest(match.fastestDaughterSec, daughterElapsed);
-    const wrongEntries = daughterCorrect
+    const fastestPlayerSec = updateFastest(match.fastestPlayerSec, selectedElapsed);
+    const wrongEntries = selectedCorrect
       ? match.wrongEntries
       : [
           ...match.wrongEntries,
           {
-            id: `${question.id}-${Date.now()}`,
+            id: `${role}-${question.id}-${Date.now()}`,
             question: formatQuestion(question),
             correctAnswer: String(question.answer),
-            userAnswer: match.daughterInput || "空",
+            userAnswer: selectedInput || "空",
             createdAt: todayText(),
             mastered: false,
           },
@@ -184,9 +242,10 @@ export default function Home() {
 
     if (isLastQuestion) {
       const daughterWins = daughterScore > dadScore;
+      const selectedWins = selectedIsDad ? dadScore > daughterScore : daughterWins;
       const questionTotal = match.questions.length;
-      const perfectDaughter = daughterScore === questionTotal;
-      const medalGain = (daughterWins ? 1 : 0) + (perfectDaughter ? 1 : 0);
+      const perfectPlayer = selectedScore === questionTotal;
+      const medalGain = (selectedWins ? 1 : 0) + (perfectPlayer ? 1 : 0);
       const gameResult: GameResult = {
         dadScore,
         daughterScore,
@@ -194,17 +253,17 @@ export default function Home() {
         questionCount: questionTotal,
         starGain: 0,
         winner: daughterWins ? "女儿" : dadScore > daughterScore ? "爸爸" : "平局",
-        perfectDaughter,
+        perfectPlayer,
       };
       const nextStats: Stats = {
         ...stats,
         medals: stats.medals + medalGain,
         totalMatches: stats.totalMatches + 1,
         totalQuestions: stats.totalQuestions + questionTotal,
-        daughterCorrect: stats.daughterCorrect + daughterScore,
-        daughterAttempts: stats.daughterAttempts + questionTotal,
-        fastestAnswerSec: updateFastest(stats.fastestAnswerSec, fastestDaughterSec),
-        winStreak: daughterWins ? stats.winStreak + 1 : 0,
+        correctAnswers: stats.correctAnswers + selectedScore,
+        attempts: stats.attempts + questionTotal,
+        fastestAnswerSec: updateFastest(stats.fastestAnswerSec, fastestPlayerSec),
+        winStreak: selectedWins ? stats.winStreak + 1 : 0,
         wrongBook: [...stats.wrongBook, ...wrongEntries],
       };
 
@@ -232,13 +291,13 @@ export default function Home() {
         dadScore,
         daughterScore,
         wrongEntries,
-        fastestDaughterSec,
+        fastestPlayerSec,
         roundStartedAt: Date.now(),
       });
       setRoundFeedback(null);
       advancingRef.current = false;
     }, FEEDBACK_DELAY_MS);
-  }, [match, persistStats, stats]);
+  }, [match, persistStats, role, stats]);
 
   useEffect(() => {
     if (view !== "game" || !match) return;
@@ -349,9 +408,39 @@ export default function Home() {
   }, [finishTrainingQuestion, training, trainingResult, view]);
 
   const accuracy = useMemo(() => {
-    if (stats.daughterAttempts === 0) return "0%";
-    return `${Math.round((stats.daughterCorrect / stats.daughterAttempts) * 100)}%`;
-  }, [stats.daughterAttempts, stats.daughterCorrect]);
+    if (stats.attempts === 0) return "0%";
+    return `${Math.round((stats.correctAnswers / stats.attempts) * 100)}%`;
+  }, [stats.attempts, stats.correctAnswers]);
+
+  if (!role) {
+    return (
+      <main className="flex min-h-screen items-center justify-center p-6">
+        <div className="rounded-[2rem] bg-white p-8 text-center shadow-soft">
+          <h1 className="text-3xl font-black text-slate-950">请先选择角色</h1>
+          <Link className="mt-5 inline-block rounded-full bg-teal-500 px-6 py-3 text-xl font-black text-white" href="/">
+            返回首页
+          </Link>
+        </div>
+      </main>
+    );
+  }
+
+  if (!dataReady) {
+    return (
+      <main className="flex min-h-screen items-center justify-center p-6">
+        <div className="rounded-[2rem] bg-white p-8 text-center shadow-soft">
+          <h1 className="text-3xl font-black text-slate-950">
+            {syncStatus === "error" ? "无法连接云端记录" : `正在加载 ${roleLabels[role]} 的记录…`}
+          </h1>
+          {syncStatus === "error" && (
+            <button className="mt-5 rounded-full bg-teal-500 px-6 py-3 text-xl font-black text-white" onClick={() => window.location.reload()} type="button">
+              重新连接
+            </button>
+          )}
+        </div>
+      </main>
+    );
+  }
 
   return (
     <main className="min-h-screen p-1 font-rounded md:p-2">
@@ -372,9 +461,15 @@ export default function Home() {
                 </h1>
               </div>
               <div className="flex min-w-64 flex-col gap-3">
+                <div className="flex items-center justify-between rounded-2xl bg-teal-50 px-4 py-2 text-sm font-black text-teal-800">
+                  <span>{roleLabels[role]}</span>
+                  <button className="underline" onClick={syncStatus === "error" ? retrySave : undefined} type="button">
+                    {syncStatus === "saving" ? "保存中…" : syncStatus === "error" ? "保存失败，重试" : "云端已保存"}
+                  </button>
+                </div>
                 <Link
                   className="rounded-2xl bg-white/90 px-5 py-3 text-center text-lg font-black text-gray-800 shadow-soft transition active:scale-[0.98]"
-                  href="/games"
+                  href={`/games?role=${role}`}
                 >
                   Game Hub
                 </Link>
@@ -461,7 +556,7 @@ export default function Home() {
       )}
 
       {view === "result" && result && (
-        <ResultView result={result} onHome={() => setView("home")} onAgain={startMatch} />
+        <ResultView profileName={roleLabels[role]} result={result} onHome={() => setView("home")} onAgain={startMatch} />
       )}
 
       {view === "training" && (
@@ -804,10 +899,12 @@ function PlayerPanel({
 
 function ResultView({
   result,
+  profileName,
   onHome,
   onAgain,
 }: {
   result: GameResult;
+  profileName: string;
   onHome: () => void;
   onAgain: () => void;
 }) {
@@ -821,8 +918,8 @@ function ResultView({
           <StatPill label="女儿" value={`${result.daughterScore}/${result.questionCount}`} />
         </div>
         <div className="mt-6 text-4xl font-black text-amber-700">🏅 +{result.medalGain}</div>
-        {result.perfectDaughter && (
-          <div className="mt-2 text-2xl font-black text-rose-600">女儿全对，额外勋章！</div>
+        {result.perfectPlayer && (
+          <div className="mt-2 text-2xl font-black text-rose-600">{profileName} 全对，额外勋章！</div>
         )}
       </div>
       <div className="grid grid-cols-2 gap-4">

@@ -1,4 +1,8 @@
+"use client";
+
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
+import { parseRole, roleLabels } from "@/lib/roles";
 
 const adventures = [
   {
@@ -28,6 +32,22 @@ const adventures = [
 ] as const;
 
 export default function GameHub() {
+  const searchParams = useSearchParams();
+  const role = parseRole(searchParams.get("role"));
+
+  if (!role) {
+    return (
+      <main className="flex min-h-screen items-center justify-center p-6">
+        <div className="rounded-[2rem] bg-white p-8 text-center shadow-soft">
+          <h1 className="text-3xl font-black text-slate-950">请先选择角色</h1>
+          <Link className="mt-5 inline-block rounded-full bg-teal-500 px-6 py-3 text-xl font-black text-white" href="/">
+            返回首页
+          </Link>
+        </div>
+      </main>
+    );
+  }
+
   return (
     <main className="min-h-screen px-4 py-5 md:px-8 md:py-8">
       <section className="mx-auto flex min-h-[calc(100dvh-2.5rem)] max-w-6xl flex-col gap-5 md:gap-6">
@@ -44,6 +64,12 @@ export default function GameHub() {
             <p className="max-w-xl text-lg font-bold leading-snug text-gray-600 md:text-right md:text-xl">
               选一个任务开始。每一次阅读和练习，都是新的冒险。
             </p>
+            <div className="flex items-center gap-3 md:absolute md:right-8 md:top-6">
+              <span className="rounded-full bg-teal-100 px-4 py-2 text-base font-black text-teal-800">
+                当前角色：{roleLabels[role]}
+              </span>
+              <Link className="font-black text-teal-700 underline" href="/">切换</Link>
+            </div>
           </div>
         </header>
 
@@ -52,7 +78,7 @@ export default function GameHub() {
             <Link
               aria-label={`${game.action}：${game.title}`}
               className={`group flex min-h-[21rem] flex-col justify-between rounded-[2rem] border-4 p-5 shadow-soft transition hover:-translate-y-1 active:scale-[0.99] md:p-7 ${game.card}`}
-              href={game.href}
+              href={`${game.href}?role=${role}`}
               key={game.title}
             >
               <div className="flex items-start justify-between gap-4">
