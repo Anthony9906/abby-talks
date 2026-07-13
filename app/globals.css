@@ -41,7 +41,6 @@ button,
 input,
 select,
 textarea {
-  color: inherit;
   font-family: var(--font-rounded);
   font-size: inherit;
   font-weight: inherit;
