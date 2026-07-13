@@ -107,8 +107,7 @@ export default function GameHub() {
           ))}
         </div>
 
-        <footer className="flex flex-wrap items-center justify-between gap-3 rounded-[1.5rem] bg-white/75 px-5 py-4 text-sm font-bold text-gray-600 shadow-soft">
-          <span>进度会保存在这台 iPad 上</span>
+        <footer className="flex flex-wrap items-center justify-end gap-3 rounded-[1.5rem] bg-white/75 px-5 py-4 text-sm font-bold text-gray-600 shadow-soft">
           <span>建议横屏体验数学对战 · 阅读任务横竖屏都可以</span>
         </footer>
       </section>
